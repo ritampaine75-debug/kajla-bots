@@ -6,6 +6,7 @@ import os
 import threading
 from urllib.parse import quote
 from collections import defaultdict
+from flask import Flask
 import telebot
 from telebot import types
 import requests
@@ -26,7 +27,14 @@ DEFAULT_CONFIG = {
 user_bot = telebot.TeleBot(USER_BOT_TOKEN)
 admin_bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 
-# Session setup
+# Render Web Service Engine
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "⚡ Kajla AI Dual Bots are running 24/7 on Render Free Web Service!"
+
+# Session setup with auto-retries
 session = requests.Session()
 retries = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
 session.mount('https://', HTTPAdapter(max_retries=retries))
@@ -39,8 +47,6 @@ user_last_msg_time = defaultdict(float)
 message_data_store = {}
 image_data_store = {}
 
-# একীভূত অ্যাডমিন স্টেট ট্র্যাকার (কনফ্লিক্ট রোধ করতে)
-# user_id -> {"state": None / "api_key" / "model" / "broadcast", "prompt_msg_id": 123}
 admin_user_state = defaultdict(lambda: {"state": None, "prompt_msg_id": None})
 pending_help_message = set()
 
@@ -421,7 +427,7 @@ def user_handle_callbacks(call):
             notify_admins(report_log)
         user_bot.answer_callback_query(call.id, "Image reported to Developer Ritam! Thanks for helping us improve.", show_alert=True)
 
-# ==================== 2. ADMIN BOT HANDLERS (ENHANCED) ====================
+# ==================== 2. ADMIN BOT HANDLERS ====================
 def get_admin_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_stats = types.InlineKeyboardButton("📊 System Stats", callback_data="stats")
@@ -435,7 +441,6 @@ def get_admin_menu():
     return markup
 
 def get_cancel_keyboard():
-    """অন্য সব বাটন গায়েব করে শুধু কাট বা ক্যানসেল বাটন দেবে"""
     markup = types.InlineKeyboardMarkup()
     btn_cancel = types.InlineKeyboardButton("❌ Cancel / Back", callback_data="cancel_action")
     markup.add(btn_cancel)
@@ -444,9 +449,7 @@ def get_cancel_keyboard():
 @admin_bot.message_handler(commands=['start'])
 def admin_handle_start(message):
     user_id = message.from_user.id
-    # যে কোনো পুরনো স্টেট থাকলে মুছে ফেলা
     admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
-    
     db = load_db()
     if user_id in db.get("admins", []):
         admin_bot.reply_to(
@@ -466,12 +469,10 @@ def admin_handle_text(message):
     current_state = admin_user_state[user_id].get("state")
     prompt_msg_id = admin_user_state[user_id].get("prompt_msg_id")
 
-    # ১. পাসওয়ার্ড ইনপুট
     if current_state == "awaiting_password":
         if text == ADMIN_PASSWORD:
             save_admin(user_id)
             admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
-            # নিরাপত্তা নিশ্চিত করতে পাসওয়ার্ড লেখা মেসেজ মুছে ফেলা
             try:
                 admin_bot.delete_message(message.chat.id, message.message_id)
             except Exception:
@@ -486,11 +487,8 @@ def admin_handle_text(message):
             admin_bot.reply_to(message, "❌ <b>Incorrect Passcode.</b> Access rejected.")
         return
 
-    # ২. লাইভ API Key ইনপুট
     if current_state == "api_key":
         admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
-        
-        # ইউজার মেসেজ ও প্রম্পট মেসেজ মুছে ক্লিন করা
         try:
             if prompt_msg_id:
                 admin_bot.delete_message(message.chat.id, prompt_msg_id)
@@ -515,10 +513,8 @@ def admin_handle_text(message):
             )
         return
 
-    # ৩. লাইভ মডেল ইনপুট
     if current_state == "model":
         admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
-        
         try:
             if prompt_msg_id:
                 admin_bot.delete_message(message.chat.id, prompt_msg_id)
@@ -535,10 +531,8 @@ def admin_handle_text(message):
         )
         return
 
-    # ৪. ব্রডকাস্ট ইনপুট
     if current_state == "broadcast":
         admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
-        
         try:
             if prompt_msg_id:
                 admin_bot.delete_message(message.chat.id, prompt_msg_id)
@@ -576,7 +570,6 @@ def admin_handle_callbacks(call):
         admin_bot.answer_callback_query(call.id, "Unauthorized!")
         return
 
-    # ❌ কাট বা ক্যানসেল বাটন চাপলে
     if call.data == "cancel_action":
         admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
         admin_bot.answer_callback_query(call.id, "Action canceled!")
@@ -589,7 +582,6 @@ def admin_handle_callbacks(call):
         )
         return
 
-    # আগের সব স্টেট মুছে ফ্রেশ করা
     admin_user_state[user_id] = {"state": None, "prompt_msg_id": None}
 
     if call.data == "stats":
@@ -617,7 +609,6 @@ def admin_handle_callbacks(call):
         )
         admin_bot.edit_message_text(conf_msg, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=get_admin_menu())
 
-    # ১ বাটন চাপলে অন্য বাটন গায়েব হয়ে শুধু Cancel বাটন থাকবে
     elif call.data == "change_api_key":
         admin_user_state[user_id] = {"state": "api_key", "prompt_msg_id": call.message.message_id}
         admin_bot.edit_message_text(
@@ -648,7 +639,7 @@ def admin_handle_callbacks(call):
             reply_markup=get_cancel_keyboard()
         )
 
-# ==================== DUAL BOT POLLING ENGINE ====================
+# ==================== DUAL BOT ENGINES ====================
 def run_user_bot():
     print("🤖 Kajla User Bot is active...")
     user_bot.infinity_polling(skip_pending=True)
@@ -657,8 +648,21 @@ def run_admin_bot():
     print("🛡️ Kajla Admin Bot is active...")
     admin_bot.infinity_polling(skip_pending=True)
 
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🌍 Web server listening on port {port}...")
+    web_app.run(host="0.0.0.0", port=port)
+
 if __name__ == "__main__":
-    print("⚡ Starting both User and Admin bots simultaneously...")
+    print("⚡ Starting User Bot, Admin Bot, and Web Service...")
+    
+    # ব্যাকগ্রাউন্ড থ্রেড ১: ইউজার বট
     user_thread = threading.Thread(target=run_user_bot, daemon=True)
     user_thread.start()
-    run_admin_bot()
+
+    # ব্যাকগ্রাউন্ড থ্রেড ২: অ্যাডমিন বট
+    admin_thread = threading.Thread(target=run_admin_bot, daemon=True)
+    admin_thread.start()
+
+    # মূল থ্রেড: Render Web Service
+    run_flask()
